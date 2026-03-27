@@ -1,17 +1,21 @@
-﻿using System.Data.OleDb;
+﻿using System;
+using System.Data.OleDb;
+using System.IO;
+using System.Net.Http;
 using System.Text;
+using System.Threading.Tasks;
 
 namespace AgenteNominaManual
 {
     class Program
     {
-        // Rutas dinámicas
+        // Rutas dinámicas y Credenciales (Ya no están fijas en el código)
         static string RutaBase = "";
         static string RutaHonorarios = "";
+        static string BaseEndpointUrl = "";
+        static string BackupEndpointUrl = "";
+        static string ApiKeySecreta = ""; // La llave de seguridad
 
-        // Endpoints
-        static readonly string BaseEndpointUrl = "https://juventudbc.com.mx/api/backend/upload/";
-        static readonly string BackupEndpointUrl = "https://juventudbc.com.mx/api/backend/upload/backup-mdb";
         static readonly string ColumnaPeriodo = "PERIODO";
 
         static async Task Main(string[] args)
@@ -70,7 +74,7 @@ namespace AgenteNominaManual
         }
 
         // ==========================================
-        // MÉTODOS PARA EL CATÁLOGO DE EMPLEADOS (NUEVOS)
+        // MÉTODOS PARA EL CATÁLOGO DE EMPLEADOS
         // ==========================================
 
         static async Task ProcesarCatalogo(string nombreCatalogo, string rutaAccess, string coleccionMongo)
@@ -105,7 +109,6 @@ namespace AgenteNominaManual
 
         static void GenerarCsvCatalogo(string rutaDestino, string connectionString)
         {
-            // Asumimos que la tabla se llama mnom01 en ambas bases de datos Access
             string query = "SELECT * FROM mnom01";
 
             using (OleDbConnection connection = new OleDbConnection(connectionString))
@@ -151,7 +154,7 @@ namespace AgenteNominaManual
         }
 
         // ==========================================
-        // MÉTODOS PARA LA NÓMINA (EXISTENTES)
+        // MÉTODOS PARA LA NÓMINA
         // ==========================================
 
         static async Task ProcesarNomina(string nombreNomina, string rutaAccess, string coleccionMongo)
@@ -262,7 +265,7 @@ namespace AgenteNominaManual
         }
 
         // ==========================================
-        // MÉTODOS DE RED Y UTILIDAD (EXISTENTES)
+        // MÉTODOS DE RED Y UTILIDAD (CON SEGURIDAD AÑADIDA)
         // ==========================================
 
         static bool CargarConfiguracion()
@@ -273,33 +276,49 @@ namespace AgenteNominaManual
             if (File.Exists(rutaConfig))
             {
                 string[] lineas = File.ReadAllLines(rutaConfig);
-                if (lineas.Length >= 2)
+                if (lineas.Length >= 5) // Ahora esperamos 5 datos de configuración
                 {
                     RutaBase = lineas[0].Trim();
                     RutaHonorarios = lineas[1].Trim();
+                    BaseEndpointUrl = lineas[2].Trim();
+                    BackupEndpointUrl = lineas[3].Trim();
+                    ApiKeySecreta = lineas[4].Trim();
                     return true;
                 }
             }
 
-            Console.WriteLine("=== CONFIGURACIÓN INICIAL ===");
+            // Si no existe o está incompleto, pedimos todos los datos
+            Console.WriteLine("=== CONFIGURACIÓN INICIAL (SEGURIDAD) ===");
             Console.WriteLine("No se encontró el archivo config.txt o está incompleto.");
 
-            Console.WriteLine("\n1. Por favor, ingresa la ruta COMPLETA de la base de datos de BASE/CONFIANZA:");
+            Console.WriteLine("\n1. Ruta COMPLETA de la base de datos de BASE/CONFIANZA:");
             Console.Write("> ");
             RutaBase = Console.ReadLine()?.Trim();
 
-            Console.WriteLine("\n2. Por favor, ingresa la ruta COMPLETA de la base de datos de HONORARIOS:");
+            Console.WriteLine("\n2. Ruta COMPLETA de la base de datos de HONORARIOS:");
             Console.Write("> ");
             RutaHonorarios = Console.ReadLine()?.Trim();
 
-            if (string.IsNullOrEmpty(RutaBase) || string.IsNullOrEmpty(RutaHonorarios))
+            Console.WriteLine("\n3. URL base del Endpoint para CSV (Ej: https://juventudbc.com.mx/api/backend/upload/):");
+            Console.Write("> ");
+            BaseEndpointUrl = Console.ReadLine()?.Trim();
+
+            Console.WriteLine("\n4. URL del Endpoint para Respaldo MDB (Ej: https://juventudbc.com.mx/api/backend/upload/backup-mdb):");
+            Console.Write("> ");
+            BackupEndpointUrl = Console.ReadLine()?.Trim();
+
+            Console.WriteLine("\n5. API KEY Secreta (La contraseña para conectar con tu servidor Node.js):");
+            Console.Write("> ");
+            ApiKeySecreta = Console.ReadLine()?.Trim();
+
+            if (string.IsNullOrEmpty(RutaBase) || string.IsNullOrEmpty(BaseEndpointUrl) || string.IsNullOrEmpty(ApiKeySecreta))
             {
-                Console.WriteLine("\nError: Debes ingresar ambas rutas.");
+                Console.WriteLine("\nError: Faltan datos obligatorios.");
                 return false;
             }
 
-            File.WriteAllLines(rutaConfig, new string[] { RutaBase, RutaHonorarios });
-            Console.WriteLine("\n¡Rutas guardadas exitosamente en config.txt!\n");
+            File.WriteAllLines(rutaConfig, new string[] { RutaBase, RutaHonorarios, BaseEndpointUrl, BackupEndpointUrl, ApiKeySecreta });
+            Console.WriteLine("\n¡Configuración y credenciales guardadas de forma local en config.txt!\n");
             return true;
         }
 
@@ -309,6 +328,9 @@ namespace AgenteNominaManual
 
             using (HttpClient client = new HttpClient())
             {
+                // Agregamos la llave secreta en las cabeceras de la petición
+                client.DefaultRequestHeaders.Add("x-api-key", ApiKeySecreta);
+
                 using (var multipartFormContent = new MultipartFormDataContent())
                 {
                     var fileStreamContent = new StreamContent(File.OpenRead(rutaArchivo));
@@ -337,6 +359,9 @@ namespace AgenteNominaManual
                 using (HttpClient client = new HttpClient())
                 {
                     client.Timeout = TimeSpan.FromMinutes(10);
+
+                    // Agregamos la llave secreta en las cabeceras de la petición
+                    client.DefaultRequestHeaders.Add("x-api-key", ApiKeySecreta);
 
                     using (var multipartFormContent = new MultipartFormDataContent())
                     {
