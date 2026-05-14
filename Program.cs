@@ -95,7 +95,7 @@ namespace AgenteNominaManual
             Console.WriteLine("          ZONA 3: CATÁLOGOS COMPARTIDOS");
             Console.WriteLine("==================================================");
 
-            Console.Write("\n¿Deseas revisar los catálogos compartidos (departamentos, niveles, sueldo+prestaciones, etc.)? (S/N): ");
+            Console.Write("\n¿Deseas revisar los catálogos compartidos (categorías, departamentos, puestos, niveles)? (S/N): ");
             string respuestaCatalogos = Console.ReadLine()?.Trim().ToUpper();
 
             if (respuestaCatalogos == "S")
