@@ -28,7 +28,7 @@ namespace AgenteNominaManual
         //   - MdbSource:         "base" o "honorarios" — de qué .mdb leerla.
         //
         // ⚠️ Asunciones por defecto (ajustar si alguna es incorrecta):
-        //   1. Las 7 viven en el MDB BASE.
+        //   1. Las 5 viven en el MDB BASE.
         //   2. El nombre de la tabla en Access es idéntico al de la colección en Mongo.
         // Si el legacy llama distinto a alguna tabla, basta cambiar AccessTable; si
         // alguna está en el MDB de honorarios, cambiar MdbSource a "honorarios".
