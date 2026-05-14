@@ -14,6 +14,41 @@ namespace AgenteNominaManual
 
         static readonly string ColumnaPeriodo = "PERIODO";
 
+        // ==========================================
+        // CATÁLOGOS COMPARTIDOS (ZONA 3)
+        // ==========================================
+        // Tabla de mapeo de catálogos auxiliares que también deben sincronizarse al
+        // backend. Estos NO son específicos de base ni honorarios sino catálogos
+        // generales (departamentos, niveles tabulares, etc).
+        //
+        // Cada entrada define:
+        //   - Descripcion:       texto legible para los prompts.
+        //   - MongoCollection:   colección destino en Mongo (segmento de la URL del backend).
+        //   - AccessTable:       nombre de la tabla en el archivo .mdb.
+        //   - MdbSource:         "base" o "honorarios" — de qué .mdb leerla.
+        //
+        // ⚠️ Asunciones por defecto (ajustar si alguna es incorrecta):
+        //   1. Las 7 viven en el MDB BASE.
+        //   2. El nombre de la tabla en Access es idéntico al de la colección en Mongo.
+        // Si el legacy llama distinto a alguna tabla, basta cambiar AccessTable; si
+        // alguna está en el MDB de honorarios, cambiar MdbSource a "honorarios".
+        //
+        // Se omite "bss" porque esa colección se actualiza vía Excel (POST /upload/bss-excel)
+        // en el backend, no vía CSV de Access. Si en algún momento BSS sí viviera en Access,
+        // basta agregar la línea correspondiente aquí.
+        record CatalogoAdicional(string Descripcion, string MongoCollection, string AccessTable, string MdbSource);
+
+        static readonly CatalogoAdicional[] CatalogosAdicionales = new[]
+        {
+            new CatalogoAdicional("CATEGORÍAS / PUESTOS (mnom03)",      "mnom03",                 "mnom03",                 "base"),
+            new CatalogoAdicional("DEPARTAMENTOS (mnom04)",             "mnom04",                 "mnom04",                 "base"),
+            new CatalogoAdicional("PUESTOS EXTENDIDOS (mnom90)",        "mnom90",                 "mnom90",                 "base"),
+            new CatalogoAdicional("NIVELES TABULARES (BASE)",           "niveles",                "niveles",                "base"),
+            new CatalogoAdicional("NIVELES TABULARES (CONFIANZA)",      "nivelesconfianza",       "nivelesconfianza",       "base"),
+            new CatalogoAdicional("SUELDO + PRESTACIONES (BASE)",       "sueldoprestacionesbase", "sueldoprestacionesbase", "base"),
+            new CatalogoAdicional("SUELDO + PRESTACIONES (CONFIANZA)",  "sueldoprestacionesconf", "sueldoprestacionesconf", "base"),
+        };
+
         static async Task Main(string[] args)
         {
             Console.WriteLine("=== AGENTE DE SINCRONIZACIÓN INJUVE (NÓMINA Y CATÁLOGOS) ===\n");
@@ -30,7 +65,7 @@ namespace AgenteNominaManual
             Console.WriteLine("==================================================");
 
             // 1. Catálogo de Base
-            await EjecutarPasoAsync(() => ProcesarCatalogo("CATÁLOGO DE EMPLEADOS (BASE)", RutaBase, "mnom01"));
+            await EjecutarPasoAsync(() => ProcesarCatalogo("CATÁLOGO DE EMPLEADOS (BASE)", RutaBase, "mnom01", "mnom01"));
 
             // 2. Nómina de Base
             await EjecutarPasoAsync(() => ProcesarNomina("NÓMINA (BASE Y CONFIANZA)", RutaBase, "mnom12"));
@@ -50,10 +85,29 @@ namespace AgenteNominaManual
             Console.WriteLine("==================================================");
 
             // 4. Catálogo de Honorarios
-            await EjecutarPasoAsync(() => ProcesarCatalogo("CATÁLOGO DE EMPLEADOS (HONORARIOS)", RutaHonorarios, "mnom01h"));
+            await EjecutarPasoAsync(() => ProcesarCatalogo("CATÁLOGO DE EMPLEADOS (HONORARIOS)", RutaHonorarios, "mnom01h", "mnom01"));
 
             // 5. Nómina de Honorarios
             await EjecutarPasoAsync(() => ProcesarNomina("NÓMINA (HONORARIOS)", RutaHonorarios, "mnom12h"));
+
+            Console.WriteLine("\n==================================================");
+            Console.WriteLine("          ZONA 3: CATÁLOGOS COMPARTIDOS");
+            Console.WriteLine("==================================================");
+
+            Console.Write("\n¿Deseas revisar los catálogos compartidos (departamentos, niveles, sueldo+prestaciones, etc.)? (S/N): ");
+            string respuestaCatalogos = Console.ReadLine()?.Trim().ToUpper();
+
+            if (respuestaCatalogos == "S")
+            {
+                foreach (var catalogo in CatalogosAdicionales)
+                {
+                    await EjecutarPasoAsync(() => ProcesarCatalogoAdicional(catalogo));
+                }
+            }
+            else
+            {
+                Console.WriteLine("Catálogos compartidos omitidos.");
+            }
 
             Console.WriteLine("\n=== PROCESO TERMINADO ===");
             Console.WriteLine("Presiona cualquier tecla para salir...");
@@ -81,7 +135,7 @@ namespace AgenteNominaManual
         // MÉTODOS PARA EL CATÁLOGO DE EMPLEADOS
         // ==========================================
 
-        static async Task ProcesarCatalogo(string nombreCatalogo, string rutaAccess, string coleccionMongo)
+        static async Task ProcesarCatalogo(string nombreCatalogo, string rutaAccess, string coleccionMongo, string tablaAccess)
         {
             Console.WriteLine($"\n--- Revisando: {nombreCatalogo} ---");
             string connectionString = $"Provider=Microsoft.Jet.OLEDB.4.0;Data Source={rutaAccess};";
@@ -93,8 +147,8 @@ namespace AgenteNominaManual
             {
                 string tempCsvPath = Path.Combine(Path.GetTempPath(), $"{coleccionMongo}_{DateTime.Now:HHmmss}.csv");
 
-                Console.WriteLine("Extrayendo todos los empleados y generando CSV...");
-                GenerarCsvCatalogo(tempCsvPath, connectionString);
+                Console.WriteLine($"Extrayendo registros de la tabla '{tablaAccess}' y generando CSV...");
+                GenerarCsvCatalogo(tempCsvPath, connectionString, tablaAccess);
 
                 Console.WriteLine("Enviando catálogo al portal...");
                 await EnviarAlPortalAsync(tempCsvPath, coleccionMongo);
@@ -111,9 +165,24 @@ namespace AgenteNominaManual
             }
         }
 
-        static void GenerarCsvCatalogo(string rutaDestino, string connectionString)
+        static async Task ProcesarCatalogoAdicional(CatalogoAdicional catalogo)
         {
-            string query = "SELECT * FROM mnom01";
+            string rutaMdb = catalogo.MdbSource == "honorarios" ? RutaHonorarios : RutaBase;
+
+            if (string.IsNullOrEmpty(rutaMdb))
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"Saltando {catalogo.Descripcion}: ruta del MDB '{catalogo.MdbSource}' no configurada.");
+                Console.ResetColor();
+                return;
+            }
+
+            await ProcesarCatalogo(catalogo.Descripcion, rutaMdb, catalogo.MongoCollection, catalogo.AccessTable);
+        }
+
+        static void GenerarCsvCatalogo(string rutaDestino, string connectionString, string tablaAccess)
+        {
+            string query = $"SELECT * FROM {tablaAccess}";
 
             using (OleDbConnection connection = new OleDbConnection(connectionString))
             {
