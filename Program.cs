@@ -33,9 +33,12 @@ namespace AgenteNominaManual
         // Si el legacy llama distinto a alguna tabla, basta cambiar AccessTable; si
         // alguna está en el MDB de honorarios, cambiar MdbSource a "honorarios".
         //
-        // Se omite "bss" porque esa colección se actualiza vía Excel (POST /upload/bss-excel)
-        // en el backend, no vía CSV de Access. Si en algún momento BSS sí viviera en Access,
-        // basta agregar la línea correspondiente aquí.
+        // Se omiten del array (NO existen en Access, se mantienen por otra vía):
+        //   - "bss": se carga vía Excel (POST /upload/bss-excel) en el backend.
+        //   - "sueldoprestacionesbase" / "sueldoprestacionesconf": se administran vía CRUD REST
+        //     (POST/PUT/DELETE por registro) desde el frontend. Intentar leerlas desde el .mdb
+        //     truena porque la tabla no existe — son datos capturados manualmente, no espejados
+        //     del legacy. Si en el futuro se decide poblarlas desde Access, agregar la línea aquí.
         record CatalogoAdicional(string Descripcion, string MongoCollection, string AccessTable, string MdbSource);
 
         static readonly CatalogoAdicional[] CatalogosAdicionales = new[]
@@ -45,8 +48,6 @@ namespace AgenteNominaManual
             new CatalogoAdicional("PUESTOS EXTENDIDOS (mnom90)",        "mnom90",                 "mnom90",                 "base"),
             new CatalogoAdicional("NIVELES TABULARES (BASE)",           "niveles",                "niveles",                "base"),
             new CatalogoAdicional("NIVELES TABULARES (CONFIANZA)",      "nivelesconfianza",       "nivelesconfianza",       "base"),
-            new CatalogoAdicional("SUELDO + PRESTACIONES (BASE)",       "sueldoprestacionesbase", "sueldoprestacionesbase", "base"),
-            new CatalogoAdicional("SUELDO + PRESTACIONES (CONFIANZA)",  "sueldoprestacionesconf", "sueldoprestacionesconf", "base"),
         };
 
         static async Task Main(string[] args)
