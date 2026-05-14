@@ -1,20 +1,16 @@
-﻿using System;
-using System.Data.OleDb;
-using System.IO;
-using System.Net.Http;
+﻿using System.Data.OleDb;
 using System.Text;
-using System.Threading.Tasks;
 
 namespace AgenteNominaManual
 {
     class Program
     {
-        // Rutas dinámicas y Credenciales (Ya no están fijas en el código)
+        // Rutas dinámicas y Credenciales
         static string RutaBase = "";
         static string RutaHonorarios = "";
         static string BaseEndpointUrl = "";
         static string BackupEndpointUrl = "";
-        static string ApiKeySecreta = ""; // La llave de seguridad
+        static string ApiKeySecreta = "";
 
         static readonly string ColumnaPeriodo = "PERIODO";
 
@@ -29,48 +25,56 @@ namespace AgenteNominaManual
                 return;
             }
 
-            try
+            Console.WriteLine("\n==================================================");
+            Console.WriteLine("          ZONA 1: BASE Y CONFIANZA");
+            Console.WriteLine("==================================================");
+
+            // 1. Catálogo de Base
+            await EjecutarPasoAsync(() => ProcesarCatalogo("CATÁLOGO DE EMPLEADOS (BASE)", RutaBase, "mnom01"));
+
+            // 2. Nómina de Base
+            await EjecutarPasoAsync(() => ProcesarNomina("NÓMINA (BASE Y CONFIANZA)", RutaBase, "mnom12"));
+
+            // 3. Respaldo MDB Base
+            Console.WriteLine("\n--------------------------------------------------");
+            Console.Write("¿Deseas realizar un respaldo del archivo .mdb de BASE Y CONFIANZA en el servidor? (S/N): ");
+            string respuestaRespaldo = Console.ReadLine()?.Trim().ToUpper();
+
+            if (respuestaRespaldo == "S")
             {
-                Console.WriteLine("\n==================================================");
-                Console.WriteLine("          ZONA 1: BASE Y CONFIANZA");
-                Console.WriteLine("==================================================");
-
-                // 1. Catálogo de Base
-                await ProcesarCatalogo("CATÁLOGO DE EMPLEADOS (BASE)", RutaBase, "mnom01");
-
-                // 2. Nómina de Base
-                await ProcesarNomina("NÓMINA (BASE Y CONFIANZA)", RutaBase, "mnom12");
-
-                // 3. Respaldo MDB Base
-                Console.WriteLine("\n--------------------------------------------------");
-                Console.Write("¿Deseas realizar un respaldo del archivo .mdb de BASE Y CONFIANZA en el servidor? (S/N): ");
-                string respuestaRespaldo = Console.ReadLine()?.Trim().ToUpper();
-
-                if (respuestaRespaldo == "S")
-                {
-                    await RespaldarMdbAsync(RutaBase);
-                }
-
-                Console.WriteLine("\n==================================================");
-                Console.WriteLine("              ZONA 2: HONORARIOS");
-                Console.WriteLine("==================================================");
-
-                // 4. Catálogo de Honorarios
-                await ProcesarCatalogo("CATÁLOGO DE EMPLEADOS (HONORARIOS)", RutaHonorarios, "mnom01h");
-
-                // 5. Nómina de Honorarios
-                await ProcesarNomina("NÓMINA (HONORARIOS)", RutaHonorarios, "mnom12h");
+                await EjecutarPasoAsync(() => RespaldarMdbAsync(RutaBase));
             }
-            catch (Exception ex)
-            {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine($"\nERROR CRÍTICO: {ex.Message}");
-                Console.ResetColor();
-            }
+
+            Console.WriteLine("\n==================================================");
+            Console.WriteLine("              ZONA 2: HONORARIOS");
+            Console.WriteLine("==================================================");
+
+            // 4. Catálogo de Honorarios
+            await EjecutarPasoAsync(() => ProcesarCatalogo("CATÁLOGO DE EMPLEADOS (HONORARIOS)", RutaHonorarios, "mnom01h"));
+
+            // 5. Nómina de Honorarios
+            await EjecutarPasoAsync(() => ProcesarNomina("NÓMINA (HONORARIOS)", RutaHonorarios, "mnom12h"));
 
             Console.WriteLine("\n=== PROCESO TERMINADO ===");
             Console.WriteLine("Presiona cualquier tecla para salir...");
             Console.ReadKey();
+        }
+
+        // Ejecuta un paso aislado: si truena, muestra el error y permite que el flujo continúe
+        // con los siguientes pasos (catálogos / nóminas / respaldo) en lugar de abortar todo.
+        static async Task EjecutarPasoAsync(Func<Task> paso)
+        {
+            try
+            {
+                await paso();
+            }
+            catch (Exception ex)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"\nERROR en este paso: {ex.Message}");
+                Console.WriteLine("Continuando con el siguiente paso...");
+                Console.ResetColor();
+            }
         }
 
         // ==========================================
@@ -154,58 +158,98 @@ namespace AgenteNominaManual
         }
 
         // ==========================================
-        // MÉTODOS PARA LA NÓMINA
+        // MÉTODOS PARA LA NÓMINA Y PERIODOS
         // ==========================================
+
+        static (string Periodo, string Rango) ObtenerPeriodoActivo(string connectionString)
+        {
+            try
+            {
+                // Ignoramos los periodos 100+ porque son anuales o especiales
+                string query = "SELECT PERIODO, FECHADESDE, FECHAHASTA FROM PERCERRADOS WHERE PERIODO < 100";
+
+                using (OleDbConnection connection = new OleDbConnection(connectionString))
+                {
+                    OleDbCommand command = new OleDbCommand(query, connection);
+                    connection.Open();
+
+                    using (OleDbDataReader reader = command.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            string periodo = reader["PERIODO"].ToString();
+                            DateTime inicio = Convert.ToDateTime(reader["FECHADESDE"]);
+                            DateTime fin = Convert.ToDateTime(reader["FECHAHASTA"]);
+
+                            // Si la fecha de hoy está dentro de este rango, ese es el periodo activo
+                            if (DateTime.Now.Date >= inicio.Date && DateTime.Now.Date <= fin.Date)
+                            {
+                                return (periodo, $"del {inicio:dd/MM/yyyy} al {fin:dd/MM/yyyy}");
+                            }
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Si la tabla no existe o hay un error, lo manejamos de forma silenciosa
+            }
+
+            return ("", "");
+        }
 
         static async Task ProcesarNomina(string nombreNomina, string rutaAccess, string coleccionMongo)
         {
             Console.WriteLine($"\n--- Revisando: {nombreNomina} ---");
             string connectionString = $"Provider=Microsoft.Jet.OLEDB.4.0;Data Source={rutaAccess};";
 
-            string ultimoPeriodo = ObtenerUltimoPeriodo(connectionString);
+            // 1. Usamos la tabla PERCERRADOS para ver en qué fechas estamos hoy
+            var periodoSugerido = ObtenerPeriodoActivo(connectionString);
+            string periodoElegido = "";
 
-            if (string.IsNullOrEmpty(ultimoPeriodo))
+            if (!string.IsNullOrEmpty(periodoSugerido.Periodo))
             {
-                Console.WriteLine($"No se encontraron periodos en la base de datos de {nombreNomina}.");
-                return;
-            }
-
-            Console.WriteLine($"Se detectó que el último periodo es: [{ultimoPeriodo}]");
-            Console.Write($"¿Deseas extraer y enviar la {nombreNomina} al portal web? (S/N): ");
-            string respuesta = Console.ReadLine()?.Trim().ToUpper();
-
-            if (respuesta == "S")
-            {
-                string tempCsvPath = Path.Combine(Path.GetTempPath(), $"{coleccionMongo}_{ultimoPeriodo}_{DateTime.Now:HHmmss}.csv");
-
-                Console.WriteLine("Extrayendo datos y generando CSV...");
-                GenerarCsv(tempCsvPath, ultimoPeriodo, connectionString, coleccionMongo);
-
-                Console.WriteLine("Enviando archivo al portal...");
-                await EnviarAlPortalAsync(tempCsvPath, coleccionMongo);
-
-                if (File.Exists(tempCsvPath)) File.Delete(tempCsvPath);
-
-                Console.ForegroundColor = ConsoleColor.Green;
-                Console.WriteLine($"¡La {nombreNomina} se procesó y envió con éxito!");
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine($"El sistema detecta que hoy estamos en el PERIODO {periodoSugerido.Periodo} ({periodoSugerido.Rango}).");
                 Console.ResetColor();
+                Console.Write($"> Presiona ENTER para procesar el periodo {periodoSugerido.Periodo}, o teclea otro número: ");
+
+                string input = Console.ReadLine()?.Trim();
+                // Si da Enter sin escribir nada, toma el sugerido. Si escribe algo, toma lo que escribió.
+                periodoElegido = string.IsNullOrEmpty(input) ? periodoSugerido.Periodo : input;
             }
             else
             {
-                Console.WriteLine($"Operación omitida para la {nombreNomina}.");
+                // Por si falla la tabla PERCERRADOS, modo manual clásico
+                Console.Write("> Escribe el número del periodo a procesar (ej. 7) y presiona Enter: ");
+                periodoElegido = Console.ReadLine()?.Trim();
             }
-        }
 
-        static string ObtenerUltimoPeriodo(string connectionString)
-        {
-            string query = $"SELECT MAX({ColumnaPeriodo}) FROM mnom12";
-            using (OleDbConnection connection = new OleDbConnection(connectionString))
+            // Validamos que sea un número válido y que no hayan cancelado.
+            // 0 (o cualquier valor <= 0) se trata como "omitir este paso".
+            if (string.IsNullOrEmpty(periodoElegido) || !int.TryParse(periodoElegido, out int periodoNum) || periodoNum <= 0)
             {
-                OleDbCommand command = new OleDbCommand(query, connection);
-                connection.Open();
-                object resultado = command.ExecuteScalar();
-                return resultado?.ToString() ?? "";
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"Operación cancelada u omitida para la {nombreNomina}.");
+                Console.ResetColor();
+                return;
             }
+
+            string tempCsvPath = Path.Combine(Path.GetTempPath(), $"{coleccionMongo}_{periodoElegido}_{DateTime.Now:HHmmss}.csv");
+
+            Console.WriteLine($"Extrayendo datos únicamente del PERIODO {periodoElegido} y generando CSV...");
+
+            // Inyectamos el periodo que eligió el usuario en el WHERE de la consulta
+            GenerarCsv(tempCsvPath, periodoElegido, connectionString, coleccionMongo);
+
+            Console.WriteLine("Enviando archivo al portal...");
+            await EnviarAlPortalAsync(tempCsvPath, coleccionMongo);
+
+            if (File.Exists(tempCsvPath)) File.Delete(tempCsvPath);
+
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine($"¡La {nombreNomina} (Periodo {periodoElegido}) se procesó y envió con éxito!");
+            Console.ResetColor();
         }
 
         static void GenerarCsv(string rutaDestino, string periodo, string connectionString, string coleccion)
@@ -276,7 +320,7 @@ namespace AgenteNominaManual
             if (File.Exists(rutaConfig))
             {
                 string[] lineas = File.ReadAllLines(rutaConfig);
-                if (lineas.Length >= 5) // Ahora esperamos 5 datos de configuración
+                if (lineas.Length >= 5)
                 {
                     RutaBase = lineas[0].Trim();
                     RutaHonorarios = lineas[1].Trim();
@@ -287,7 +331,6 @@ namespace AgenteNominaManual
                 }
             }
 
-            // Si no existe o está incompleto, pedimos todos los datos
             Console.WriteLine("=== CONFIGURACIÓN INICIAL (SEGURIDAD) ===");
             Console.WriteLine("No se encontró el archivo config.txt o está incompleto.");
 
