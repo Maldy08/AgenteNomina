@@ -41,26 +41,26 @@ namespace AgenteNominaManual
         //   - MdbSource:         "base" o "honorarios" — de qué .mdb leerla.
         //
         // ⚠️ Asunciones por defecto (ajustar si alguna es incorrecta):
-        //   1. Las 5 viven en el MDB BASE.
-        //   2. El nombre de la tabla en Access es idéntico al de la colección en Mongo.
-        // Si el legacy llama distinto a alguna tabla, basta cambiar AccessTable; si
-        // alguna está en el MDB de honorarios, cambiar MdbSource a "honorarios".
+        //   1. Todas viven en el MDB BASE (ninguna en honorarios).
+        //   2. AccessTable puede DIFERIR del nombre de la colección en Mongo. Caso conocido:
+        //      en Access las tablas se llaman SUELDOSPRESTACIONESBASE/CONF (plural "SUELDOS"),
+        //      pero en Mongo son sueldoprestacionesbase/conf (singular "SUELDO").
+        //   Si el legacy llama distinto a alguna tabla, cambiar AccessTable; si alguna está
+        //   en el MDB de honorarios, cambiar MdbSource a "honorarios".
         //
-        // Se omiten del array (NO existen en Access, se mantienen por otra vía):
-        //   - "bss": se carga vía Excel (POST /upload/bss-excel) en el backend.
-        //   - "sueldoprestacionesbase" / "sueldoprestacionesconf": se administran vía CRUD REST
-        //     (POST/PUT/DELETE por registro) desde el frontend. Intentar leerlas desde el .mdb
-        //     truena porque la tabla no existe — son datos capturados manualmente, no espejados
-        //     del legacy. Si en el futuro se decide poblarlas desde Access, agregar la línea aquí.
+        // Se omite "bss" porque esa colección se actualiza vía Excel (POST /upload/bss-excel)
+        // en el backend, no vía CSV de Access.
         record CatalogoAdicional(string Descripcion, string MongoCollection, string AccessTable, string MdbSource);
 
         static readonly CatalogoAdicional[] CatalogosAdicionales = new[]
         {
-            new CatalogoAdicional("CATEGORÍAS / PUESTOS (mnom03)",      "mnom03",                 "mnom03",                 "base"),
-            new CatalogoAdicional("DEPARTAMENTOS (mnom04)",             "mnom04",                 "mnom04",                 "base"),
-            new CatalogoAdicional("PUESTOS EXTENDIDOS (mnom90)",        "mnom90",                 "mnom90",                 "base"),
-            new CatalogoAdicional("NIVELES TABULARES (BASE)",           "niveles",                "niveles",                "base"),
-            new CatalogoAdicional("NIVELES TABULARES (CONFIANZA)",      "nivelesconfianza",       "nivelesconfianza",       "base"),
+            new CatalogoAdicional("CATEGORÍAS / PUESTOS (mnom03)",      "mnom03",                 "mnom03",                   "base"),
+            new CatalogoAdicional("DEPARTAMENTOS (mnom04)",             "mnom04",                 "mnom04",                   "base"),
+            new CatalogoAdicional("PUESTOS EXTENDIDOS (mnom90)",        "mnom90",                 "mnom90",                   "base"),
+            new CatalogoAdicional("NIVELES TABULARES (BASE)",           "niveles",                "niveles",                  "base"),
+            new CatalogoAdicional("NIVELES TABULARES (CONFIANZA)",      "nivelesconfianza",       "nivelesconfianza",         "base"),
+            new CatalogoAdicional("SUELDO + PRESTACIONES (BASE)",       "sueldoprestacionesbase", "SUELDOSPRESTACIONESBASE",  "base"),
+            new CatalogoAdicional("SUELDO + PRESTACIONES (CONFIANZA)",  "sueldoprestacionesconf", "SUELDOSPRESTACIONESCONF",  "base"),
         };
 
         static async Task Main(string[] args)
@@ -120,7 +120,7 @@ namespace AgenteNominaManual
             Console.WriteLine("          ZONA 3: CATÁLOGOS COMPARTIDOS");
             Console.WriteLine("==================================================");
 
-            Console.Write("\n¿Deseas revisar los catálogos compartidos (categorías, departamentos, puestos, niveles)? (S/N): ");
+            Console.Write("\n¿Deseas revisar los catálogos compartidos (categorías, departamentos, puestos, niveles, sueldo+prestaciones)? (S/N): ");
             string respuestaCatalogos = Console.ReadLine()?.Trim().ToUpper();
 
             if (respuestaCatalogos == "S")
