@@ -1,4 +1,4 @@
-﻿using System.Data.OleDb;
+﻿using System.Globalization;
 using System.Text;
 
 namespace AgenteNominaManual
@@ -13,6 +13,19 @@ namespace AgenteNominaManual
         static string ApiKeySecreta = "";
 
         static readonly string ColumnaPeriodo = "PERIODO";
+
+        // Lector de .mdb seleccionado según el SO. En Windows usa OleDb + Jet
+        // (32-bit); en macOS/Linux invoca mdb-export (paquete mdbtools).
+        static readonly IMdbReader Reader = CreateReader();
+
+        static IMdbReader CreateReader()
+        {
+#if WINDOWS_OLEDB
+            if (OperatingSystem.IsWindows())
+                return new WindowsOleDbReader();
+#endif
+            return new MdbToolsReader();
+        }
 
         // ==========================================
         // CATÁLOGOS COMPARTIDOS (ZONA 3)
@@ -52,6 +65,18 @@ namespace AgenteNominaManual
         static async Task Main(string[] args)
         {
             Console.WriteLine("=== AGENTE DE SINCRONIZACIÓN INJUVE (NÓMINA Y CATÁLOGOS) ===\n");
+
+            if (!OperatingSystem.IsWindows() && !MdbToolsReader.IsAvailable())
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("ERROR: Este agente requiere 'mdbtools' para leer archivos .mdb en este sistema.");
+                Console.WriteLine("Instala con:  brew install mdbtools   (macOS)");
+                Console.WriteLine("              sudo apt install mdbtools   (Debian/Ubuntu)");
+                Console.ResetColor();
+                Console.WriteLine("\nPresiona cualquier tecla para salir...");
+                Console.ReadKey();
+                return;
+            }
 
             if (!CargarConfiguracion())
             {
@@ -138,7 +163,6 @@ namespace AgenteNominaManual
         static async Task ProcesarCatalogo(string nombreCatalogo, string rutaAccess, string coleccionMongo, string tablaAccess)
         {
             Console.WriteLine($"\n--- Revisando: {nombreCatalogo} ---");
-            string connectionString = $"Provider=Microsoft.Jet.OLEDB.4.0;Data Source={rutaAccess};";
 
             Console.Write($"¿Deseas extraer y enviar el {nombreCatalogo} al portal web? (S/N): ");
             string respuesta = Console.ReadLine()?.Trim().ToUpper();
@@ -148,7 +172,7 @@ namespace AgenteNominaManual
                 string tempCsvPath = Path.Combine(Path.GetTempPath(), $"{coleccionMongo}_{DateTime.Now:HHmmss}.csv");
 
                 Console.WriteLine($"Extrayendo registros de la tabla '{tablaAccess}' y generando CSV...");
-                GenerarCsvCatalogo(tempCsvPath, connectionString, tablaAccess);
+                GenerarCsvCatalogo(tempCsvPath, rutaAccess, tablaAccess);
 
                 Console.WriteLine("Enviando catálogo al portal...");
                 await EnviarAlPortalAsync(tempCsvPath, coleccionMongo);
@@ -180,83 +204,36 @@ namespace AgenteNominaManual
             await ProcesarCatalogo(catalogo.Descripcion, rutaMdb, catalogo.MongoCollection, catalogo.AccessTable);
         }
 
-        static void GenerarCsvCatalogo(string rutaDestino, string connectionString, string tablaAccess)
+        static void GenerarCsvCatalogo(string rutaDestino, string rutaMdb, string tablaAccess)
         {
-            string query = $"SELECT * FROM {tablaAccess}";
-
-            using (OleDbConnection connection = new OleDbConnection(connectionString))
-            {
-                OleDbCommand command = new OleDbCommand(query, connection);
-                connection.Open();
-
-                using (OleDbDataReader reader = command.ExecuteReader())
-                using (StreamWriter writer = new StreamWriter(rutaDestino, false, Encoding.UTF8))
-                {
-                    int numColumnas = reader.FieldCount;
-                    string[] nombresColumnas = new string[numColumnas];
-                    for (int i = 0; i < numColumnas; i++)
-                    {
-                        nombresColumnas[i] = reader.GetName(i).Replace("[", "").Replace("]", "");
-                    }
-                    writer.WriteLine(string.Join(",", nombresColumnas));
-
-                    while (reader.Read())
-                    {
-                        string[] fila = new string[numColumnas];
-                        for (int i = 0; i < numColumnas; i++)
-                        {
-                            if (reader.IsDBNull(i))
-                            {
-                                fila[i] = "";
-                            }
-                            else if (reader.GetFieldType(i) == typeof(DateTime))
-                            {
-                                fila[i] = reader.GetDateTime(i).ToString("dd/MM/yyyy");
-                            }
-                            else
-                            {
-                                string valor = reader[i].ToString();
-                                valor = valor.Replace(",", " ").Replace("\r", "").Replace("\n", " ");
-                                fila[i] = valor;
-                            }
-                        }
-                        writer.WriteLine(string.Join(",", fila));
-                    }
-                }
-            }
+            var (headers, rows) = Reader.ReadTable(rutaMdb, tablaAccess);
+            WriteCsv(rutaDestino, headers, rows);
         }
 
         // ==========================================
         // MÉTODOS PARA LA NÓMINA Y PERIODOS
         // ==========================================
 
-        static (string Periodo, string Rango) ObtenerPeriodoActivo(string connectionString)
+        static (string Periodo, string Rango) ObtenerPeriodoActivo(string rutaMdb)
         {
             try
             {
-                // Ignoramos los periodos 100+ porque son anuales o especiales
-                string query = "SELECT PERIODO, FECHADESDE, FECHAHASTA FROM PERCERRADOS WHERE PERIODO < 100";
+                var (_, rows) = Reader.ReadTable(rutaMdb, "PERCERRADOS",
+                    columns: new[] { "PERIODO", "FECHADESDE", "FECHAHASTA" });
 
-                using (OleDbConnection connection = new OleDbConnection(connectionString))
+                foreach (var row in rows)
                 {
-                    OleDbCommand command = new OleDbCommand(query, connection);
-                    connection.Open();
+                    // Ignoramos los periodos 100+ porque son anuales o especiales
+                    if (!int.TryParse(row[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out int per) || per >= 100)
+                        continue;
+                    if (!DateTime.TryParseExact(row[1], "dd/MM/yyyy", CultureInfo.InvariantCulture, DateTimeStyles.None, out var inicio))
+                        continue;
+                    if (!DateTime.TryParseExact(row[2], "dd/MM/yyyy", CultureInfo.InvariantCulture, DateTimeStyles.None, out var fin))
+                        continue;
 
-                    using (OleDbDataReader reader = command.ExecuteReader())
-                    {
-                        while (reader.Read())
-                        {
-                            string periodo = reader["PERIODO"].ToString();
-                            DateTime inicio = Convert.ToDateTime(reader["FECHADESDE"]);
-                            DateTime fin = Convert.ToDateTime(reader["FECHAHASTA"]);
-
-                            // Si la fecha de hoy está dentro de este rango, ese es el periodo activo
-                            if (DateTime.Now.Date >= inicio.Date && DateTime.Now.Date <= fin.Date)
-                            {
-                                return (periodo, $"del {inicio:dd/MM/yyyy} al {fin:dd/MM/yyyy}");
-                            }
-                        }
-                    }
+                    // Si la fecha de hoy está dentro de este rango, ese es el periodo activo
+                    if (DateTime.Now.Date >= inicio.Date && DateTime.Now.Date <= fin.Date)
+                        return (row[0], $"del {inicio:dd/MM/yyyy} al {fin:dd/MM/yyyy}");
                 }
             }
             catch
@@ -270,10 +247,9 @@ namespace AgenteNominaManual
         static async Task ProcesarNomina(string nombreNomina, string rutaAccess, string coleccionMongo)
         {
             Console.WriteLine($"\n--- Revisando: {nombreNomina} ---");
-            string connectionString = $"Provider=Microsoft.Jet.OLEDB.4.0;Data Source={rutaAccess};";
 
             // 1. Usamos la tabla PERCERRADOS para ver en qué fechas estamos hoy
-            var periodoSugerido = ObtenerPeriodoActivo(connectionString);
+            var periodoSugerido = ObtenerPeriodoActivo(rutaAccess);
             string periodoElegido = "";
 
             if (!string.IsNullOrEmpty(periodoSugerido.Periodo))
@@ -309,7 +285,7 @@ namespace AgenteNominaManual
             Console.WriteLine($"Extrayendo datos únicamente del PERIODO {periodoElegido} y generando CSV...");
 
             // Inyectamos el periodo que eligió el usuario en el WHERE de la consulta
-            GenerarCsv(tempCsvPath, periodoElegido, connectionString, coleccionMongo);
+            GenerarCsv(tempCsvPath, periodoElegido, rutaAccess, coleccionMongo);
 
             Console.WriteLine("Enviando archivo al portal...");
             await EnviarAlPortalAsync(tempCsvPath, coleccionMongo);
@@ -321,61 +297,42 @@ namespace AgenteNominaManual
             Console.ResetColor();
         }
 
-        static void GenerarCsv(string rutaDestino, string periodo, string connectionString, string coleccion)
+        // Columnas explícitas para la nómina de BASE/CONFIANZA: el backend las consume
+        // en este orden. Para HONORARIOS (coleccion = "mnom12h") el agente envía SELECT *.
+        static readonly string[] ColumnasNominaBase = new[]
         {
-            string query = "";
+            "EMPLEADO", "DEPTO", "CAT", "PUESTO", "PROGRAMA", "SUBPROGRAMA", "META", "ACCION",
+            "PERCDESC", "IMPORTE", "DESCRIPCION", "NUMDESC", "CHEQUE", "DIASTRA", "EXENTO", "TIPOEMP",
+            "SUECOM", "MPIO", "PERIODO", "FECHDES", "FECHHAS", "FECHAP", "AÑO", "PERPAGO", "DIASHAB",
+            "DIASADI", "SUELDODIA", "ISPT", "SUBSIDIO", "CREDITO", "ISSSTEPAT", "SERMEDPAT",
+            "FONPENPAT", "ACCTRAPAT", "CONADIPAT", "ACTINST", "CLAVEPRESUP", "HSDOBLES", "HSTRIPLES",
+            "IMPHSDOBLES", "IMPHSTRIPLES", "IMPHSEXTRASGRAV", "TIPONOM", "YASETIMBRO", "ISPTSUELDO",
+            "ISPTOTRASPERC", "BANCO", "MESPAGADO", "RECIBO", "CUOTAPAT", "RFC", "PROISSSTECALI",
+        };
 
-            if (coleccion == "mnom12")
-            {
-                string columnasBase = "EMPLEADO, DEPTO, CAT, PUESTO, PROGRAMA, SUBPROGRAMA, META, ACCION, PERCDESC, IMPORTE, DESCRIPCION, NUMDESC, CHEQUE, DIASTRA, EXENTO, TIPOEMP, SUECOM, MPIO, PERIODO, FECHDES, FECHHAS, FECHAP, [AÑO], PERPAGO, DIASHAB, DIASADI, SUELDODIA, ISPT, SUBSIDIO, CREDITO, ISSSTEPAT, SERMEDPAT, FONPENPAT, ACCTRAPAT, CONADIPAT, ACTINST, CLAVEPRESUP, HSDOBLES, HSTRIPLES, IMPHSDOBLES, IMPHSTRIPLES, IMPHSEXTRASGRAV, TIPONOM, YASETIMBRO, ISPTSUELDO, ISPTOTRASPERC, BANCO, MESPAGADO, RECIBO, CUOTAPAT, RFC, PROISSSTECALI";
-                query = $"SELECT {columnasBase} FROM mnom12 WHERE {ColumnaPeriodo} = {periodo}";
-            }
-            else
-            {
-                query = $"SELECT * FROM mnom12 WHERE {ColumnaPeriodo} = {periodo}";
-            }
-
-            using (OleDbConnection connection = new OleDbConnection(connectionString))
-            {
-                OleDbCommand command = new OleDbCommand(query, connection);
-                connection.Open();
-
-                using (OleDbDataReader reader = command.ExecuteReader())
-                using (StreamWriter writer = new StreamWriter(rutaDestino, false, Encoding.UTF8))
-                {
-                    int numColumnas = reader.FieldCount;
-                    string[] nombresColumnas = new string[numColumnas];
-                    for (int i = 0; i < numColumnas; i++)
-                    {
-                        nombresColumnas[i] = reader.GetName(i).Replace("[", "").Replace("]", "");
-                    }
-                    writer.WriteLine(string.Join(",", nombresColumnas));
-
-                    while (reader.Read())
-                    {
-                        string[] fila = new string[numColumnas];
-                        for (int i = 0; i < numColumnas; i++)
-                        {
-                            if (reader.IsDBNull(i))
-                            {
-                                fila[i] = "";
-                            }
-                            else if (reader.GetFieldType(i) == typeof(DateTime))
-                            {
-                                fila[i] = reader.GetDateTime(i).ToString("dd/MM/yyyy");
-                            }
-                            else
-                            {
-                                string valor = reader[i].ToString();
-                                valor = valor.Replace(",", " ").Replace("\r", "").Replace("\n", " ");
-                                fila[i] = valor;
-                            }
-                        }
-                        writer.WriteLine(string.Join(",", fila));
-                    }
-                }
-            }
+        static void GenerarCsv(string rutaDestino, string periodo, string rutaMdb, string coleccion)
+        {
+            string[]? columns = (coleccion == "mnom12") ? ColumnasNominaBase : null;
+            var (headers, rows) = Reader.ReadTable(rutaMdb, "mnom12", columns,
+                filter: (ColumnaPeriodo, periodo));
+            WriteCsv(rutaDestino, headers, rows);
         }
+
+        // Escribe el CSV con el formato exacto que el backend ya espera:
+        //   - Sin comillas.
+        //   - Comas y saltos de línea dentro de un valor reemplazados por espacio.
+        //   - Corchetes quitados de los nombres de columna (legado de OleDb).
+        //   - Codificación UTF-8.
+        static void WriteCsv(string rutaDestino, string[] headers, IEnumerable<string[]> rows)
+        {
+            using var writer = new StreamWriter(rutaDestino, false, Encoding.UTF8);
+            writer.WriteLine(string.Join(",", headers.Select(SanitizarHeader)));
+            foreach (var row in rows)
+                writer.WriteLine(string.Join(",", row.Select(SanitizarValor)));
+        }
+
+        static string SanitizarHeader(string s) => s.Replace("[", "").Replace("]", "");
+        static string SanitizarValor(string s) => s.Replace(",", " ").Replace("\r", "").Replace("\n", " ");
 
         // ==========================================
         // MÉTODOS DE RED Y UTILIDAD (CON SEGURIDAD AÑADIDA)

@@ -1,14 +1,23 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <PlatformTarget>x86</PlatformTarget>
   </PropertyGroup>
 
-  <ItemGroup>
+  <!-- Build host = Windows: el proveedor Jet OLEDB es 32-bit puro, así que
+       seguimos forzando x86 y referenciamos System.Data.OleDb. WINDOWS_OLEDB
+       activa la clase WindowsOleDbReader en MdbReaders.cs y la rama de OleDb
+       en el factory de Program.cs. En macOS/Linux nada de esto aplica: el
+       binario corre como AnyCPU y usa mdbtools por Process. -->
+  <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+    <PlatformTarget>x86</PlatformTarget>
+    <DefineConstants>$(DefineConstants);WINDOWS_OLEDB</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
     <PackageReference Include="System.Data.OleDb" Version="10.0.5" />
   </ItemGroup>
 
